@@ -1,0 +1,17 @@
+﻿  Determining projects to restore...
+  All projects are up-to-date for restore.
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\common\ResolutionModeWrapper.cs(8,18): warning CS0659: 'ResolutionModeWrapper' overrides Object.Equals(object o) but does not override Object.GetHashCode() [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\common\WinEventHook.cs(201,30): warning CS0168: The variable 'ex' is declared but never used [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\Program.cs(46,40): error CS0103: The name 'HighDpiMode' does not exist in the current context [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\Program.cs(46,25): error CS0117: 'Application' does not contain a definition for 'SetHighDpiMode' [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+
+Build FAILED.
+
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\common\ResolutionModeWrapper.cs(8,18): warning CS0659: 'ResolutionModeWrapper' overrides Object.Equals(object o) but does not override Object.GetHashCode() [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\common\WinEventHook.cs(201,30): warning CS0168: The variable 'ex' is declared but never used [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\Program.cs(46,40): error CS0103: The name 'HighDpiMode' does not exist in the current context [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\Program.cs(46,25): error CS0117: 'Application' does not contain a definition for 'SetHighDpiMode' [C:\Users\ariel\Documents\VibranceGUI+\vibranceGUI\vibrance.GUI\vibrance.GUI.csproj]
+    2 Warning(s)
+    2 Error(s)
+
+Time Elapsed 00:00:00.72
