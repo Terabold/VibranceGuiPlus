@@ -57,12 +57,16 @@ namespace vibrance.GUI.common
             try
             {
                 _startupKey = Registry.CurrentUser.OpenSubKey(RunKey, true);
-                if (_startupKey.GetValue(appName) != null)
+                if (_startupKey != null && _startupKey.GetValue(appName) != null)
                     return true;
             }
             catch (Exception)
             {
                 return false;
+            }
+            finally
+            {
+                _startupKey?.Close();
             }
             return false;
         }

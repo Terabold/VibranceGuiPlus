@@ -1,16 +1,23 @@
 using System;
 using System.Runtime.InteropServices;
-using System.Drawing;
+using System.Windows.Forms;
 
 namespace vibrance.GUI.common
 {
     public class GammaRampController
     {
+        // ── GDI32 (user-mode fallback) ───────────────────────────────────────
         [DllImport("gdi32.dll")]
-        public static extern bool SetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
+        private static extern bool SetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
 
         [DllImport("gdi32.dll")]
-        public static extern bool GetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
+        private static extern bool GetDeviceGammaRamp(IntPtr hDC, ref RAMP lpRamp);
+
+        [DllImport("gdi32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr CreateDC(string lpszDriver, string lpszDevice, string lpszOutput, IntPtr lpInitData);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr hDC);
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetDC(IntPtr hWnd);
@@ -18,6 +25,67 @@ namespace vibrance.GUI.common
         [DllImport("user32.dll")]
         private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
+        // ── D3DKMT (kernel-mode path — bypasses foreground/driver restrictions) ──
+        // This is the same path NVIDIA Control Panel uses internally.
+        [DllImport("gdi32.dll", SetLastError = false)]
+        private static extern uint D3DKMTOpenAdapterFromHdc(ref D3DKMT_OPENADAPTERFROMHDC pData);
+
+        [DllImport("gdi32.dll", SetLastError = false)]
+        private static extern uint D3DKMTCreateDevice(ref D3DKMT_CREATEDEVICE pData);
+
+        [DllImport("gdi32.dll", SetLastError = false)]
+        private static extern uint D3DKMTSetGammaRamp(ref D3DKMT_SETGAMMARAMP pData);
+
+        [DllImport("gdi32.dll", SetLastError = false)]
+        private static extern uint D3DKMTDestroyDevice(ref D3DKMT_DESTROYDEVICE pData);
+
+        [DllImport("gdi32.dll", SetLastError = false)]
+        private static extern uint D3DKMTCloseAdapter(ref D3DKMT_CLOSEADAPTER pData);
+
+        // ── D3DKMT structures ────────────────────────────────────────────────
+        [StructLayout(LayoutKind.Sequential)]
+        private struct D3DKMT_LUID { public uint LowPart; public int HighPart; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct D3DKMT_OPENADAPTERFROMHDC
+        {
+            public IntPtr hDc;
+            public uint hAdapter;
+            public D3DKMT_LUID AdapterLuid;
+            public uint VidPnSourceId;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct D3DKMT_CREATEDEVICE
+        {
+            public uint hAdapter;
+            public uint Flags;           // D3DKMT_CREATEDEVICEFLAGS bit field — 0 = defaults
+            public uint hDevice;         // [out]
+            public IntPtr pCommandBuffer;        // [out] unused
+            public uint CommandBufferSize;       // [out] unused
+            public IntPtr pAllocationList;       // [out] unused
+            public uint AllocationListSize;      // [out] unused
+            public IntPtr pPatchLocationList;    // [out] unused
+            public uint PatchLocationListSize;   // [out] unused
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct D3DKMT_SETGAMMARAMP
+        {
+            public uint hDevice;
+            public uint FirstEntry;       // 0
+            public uint NumberOfEntries;  // 256
+            public uint Type;             // D3DDDI_GAMMARAMP_RGB256x3x16 = 2
+            public IntPtr pGammaRamp;     // pointer to ushort[768] (R[256], G[256], B[256])
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct D3DKMT_DESTROYDEVICE { public uint hDevice; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct D3DKMT_CLOSEADAPTER { public uint hAdapter; }
+
+        // ── Gamma ramp data ──────────────────────────────────────────────────
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
         public struct RAMP
         {
@@ -31,92 +99,221 @@ namespace vibrance.GUI.common
 
         private RAMP _originalRamp;
         private bool _hasOriginalRamp = false;
+        private RAMP _lastRamp;
+        private bool _hasLastRamp = false;
 
+        // ── Core ramp setter ─────────────────────────────────────────────────
+        private bool SetRamp(ref RAMP ramp)
+        {
+            // Build a flat ushort[768] array (R[256],G[256],B[256]) and pin it
+            // so D3DKMT can pointer to it without GC interference.
+            ushort[] flat = new ushort[768];
+            Array.Copy(ramp.Red,   0, flat,   0, 256);
+            Array.Copy(ramp.Green, 0, flat, 256, 256);
+            Array.Copy(ramp.Blue,  0, flat, 512, 256);
+
+            GCHandle pin = GCHandle.Alloc(flat, GCHandleType.Pinned);
+            try
+            {
+                bool kmtOk = SetRampViaD3DKMT(pin.AddrOfPinnedObject());
+                if (kmtOk) return true;
+            }
+            finally
+            {
+                pin.Free();
+            }
+
+            // D3DKMT unavailable or failed — fall through to GDI paths.
+            bool gdiOk = false;
+            string deviceName = Screen.PrimaryScreen.DeviceName;
+
+            IntPtr hMonDC = CreateDC(null, deviceName, null, IntPtr.Zero);
+            if (hMonDC != IntPtr.Zero)
+            {
+                gdiOk |= SetDeviceGammaRamp(hMonDC, ref ramp);
+                DeleteDC(hMonDC);
+            }
+
+            IntPtr hDesktopDC = GetDC(IntPtr.Zero);
+            gdiOk |= SetDeviceGammaRamp(hDesktopDC, ref ramp);
+            ReleaseDC(IntPtr.Zero, hDesktopDC);
+
+            bool result = gdiOk;
+            VibranceGUI.Log($"GammaRampController.SetRamp: D3DKMT=fail GDI={gdiOk}");
+            return result;
+        }
+
+        /// <summary>
+        /// Sets the gamma ramp via D3DKMT — kernel-mode path that NVIDIA Control Panel also uses.
+        /// Not restricted to foreground applications, unlike the GDI SetDeviceGammaRamp path.
+        /// Returns true if the call succeeded, false if D3DKMT is unavailable on this system.
+        /// </summary>
+        private bool SetRampViaD3DKMT(IntPtr pFlatRamp)
+        {
+            // Get desktop DC to find the adapter
+            IntPtr hDC = GetDC(IntPtr.Zero);
+            if (hDC == IntPtr.Zero) return false;
+
+            try
+            {
+                var openData = new D3DKMT_OPENADAPTERFROMHDC { hDc = hDC };
+                if (D3DKMTOpenAdapterFromHdc(ref openData) != 0) return false;
+
+                uint hAdapter = openData.hAdapter;
+                try
+                {
+                    var createData = new D3DKMT_CREATEDEVICE { hAdapter = hAdapter };
+                    if (D3DKMTCreateDevice(ref createData) != 0) return false;
+
+                    var destroyData = new D3DKMT_DESTROYDEVICE { hDevice = createData.hDevice };
+                    try
+                    {
+                        var setData = new D3DKMT_SETGAMMARAMP
+                        {
+                            hDevice       = createData.hDevice,
+                            FirstEntry    = 0,
+                            NumberOfEntries = 256,
+                            Type          = 2,      // D3DDDI_GAMMARAMP_RGB256x3x16
+                            pGammaRamp    = pFlatRamp
+                        };
+                        return D3DKMTSetGammaRamp(ref setData) == 0;
+                    }
+                    finally
+                    {
+                        D3DKMTDestroyDevice(ref destroyData);
+                    }
+                }
+                finally
+                {
+                    var closeData = new D3DKMT_CLOSEADAPTER { hAdapter = hAdapter };
+                    D3DKMTCloseAdapter(ref closeData);
+                }
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, hDC);
+            }
+        }
+
+        // ── Public API ───────────────────────────────────────────────────────
         public bool SaveOriginalRamp()
         {
-            IntPtr hDC = GetDC(IntPtr.Zero);
-            _originalRamp = new RAMP();
-            _originalRamp.Red = new ushort[256];
-            _originalRamp.Green = new ushort[256];
-            _originalRamp.Blue = new ushort[256];
+            _originalRamp = new RAMP
+            {
+                Red   = new ushort[256],
+                Green = new ushort[256],
+                Blue  = new ushort[256]
+            };
 
-            bool result = GetDeviceGammaRamp(hDC, ref _originalRamp);
-            ReleaseDC(IntPtr.Zero, hDC);
-            
+            string deviceName = Screen.PrimaryScreen.DeviceName;
+            IntPtr hMonDC = CreateDC(null, deviceName, null, IntPtr.Zero);
+            bool result = false;
+            if (hMonDC != IntPtr.Zero)
+            {
+                result = GetDeviceGammaRamp(hMonDC, ref _originalRamp);
+                DeleteDC(hMonDC);
+            }
+            if (!result)
+            {
+                IntPtr hDesktopDC = GetDC(IntPtr.Zero);
+                result = GetDeviceGammaRamp(hDesktopDC, ref _originalRamp);
+                ReleaseDC(IntPtr.Zero, hDesktopDC);
+            }
+
+            // If reading failed, build a default linear ramp so restore still works.
+            if (!result)
+            {
+                for (int i = 0; i < 256; i++)
+                {
+                    ushort v = (ushort)(i * 257); // maps 0-255 → 0-65535
+                    _originalRamp.Red[i]   = v;
+                    _originalRamp.Green[i] = v;
+                    _originalRamp.Blue[i]  = v;
+                }
+                result = true; // we have a usable fallback ramp
+                VibranceGUI.Log("GammaRampController: GetDeviceGammaRamp failed — using linear fallback.");
+            }
+
             _hasOriginalRamp = result;
             return result;
         }
 
         public bool RestoreOriginalRamp()
         {
+            // NVAPI path — try first since GDI is silently ignored on NVIDIA App systems
+            if (vibrance.GUI.NVIDIA.NvidiaColorController.IsAvailable)
+                return vibrance.GUI.NVIDIA.NvidiaColorController.RestoreOriginal();
+
             if (!_hasOriginalRamp) return false;
-            
-            IntPtr hDC = GetDC(IntPtr.Zero);
-            bool result = SetDeviceGammaRamp(hDC, ref _originalRamp);
-            ReleaseDC(IntPtr.Zero, hDC);
-            return result;
+            _hasLastRamp = false;
+            return SetRamp(ref _originalRamp);
+        }
+
+        /// <summary>Called by the 16ms refresh timer — re-applies the last ramp cheaply.</summary>
+        public void Reapply()
+        {
+            // If NVAPI is active the driver keeps it; no re-apply needed.
+            // If GDI path, re-apply every tick to fight driver resets.
+            if (!vibrance.GUI.NVIDIA.NvidiaColorController.IsAvailable && _hasLastRamp)
+                SetRamp(ref _lastRamp);
         }
 
         public bool ApplyShadowBoostAndGamma(int shadowBoostStrength, float gammaScalar = 1.0f)
         {
-            // strength should be between 0 (no boost) and 100 (max boost)
-            if (shadowBoostStrength < 0) shadowBoostStrength = 0;
+            if (shadowBoostStrength < 0)  shadowBoostStrength = 0;
             if (shadowBoostStrength > 100) shadowBoostStrength = 100;
-
-            // gammaScalar should normally be 1.0 for default.
             if (gammaScalar <= 0f) gammaScalar = 1.0f;
 
-            IntPtr hDC = GetDC(IntPtr.Zero);
-            RAMP ramp = new RAMP();
-            ramp.Red = new ushort[256];
-            ramp.Green = new ushort[256];
-            ramp.Blue = new ushort[256];
+            RAMP ramp = new RAMP
+            {
+                Red   = new ushort[256],
+                Green = new ushort[256],
+                Blue  = new ushort[256]
+            };
 
-            // Normalize strength to a factor between 0.0 and 1.5 roughly
-            // Increase this to have a stronger effect on shadows
-            double intensity = shadowBoostStrength / 100.0 * 2.5; 
+            double intensity = shadowBoostStrength / 100.0 * 2.5;
 
             for (int i = 0; i < 256; i++)
             {
-                // Non-linear gamma curve to boost shadows while preserving highlights
-                // We use a curve that rises quickly initially, then tapers off.
-                // Output = i + intensity * (i * (255 - i) / 128) -> simplified parabola
-                // A better approach is blending linear (x) with sqrt(x)
-                
-                double normalizedI = i / 255.0; // 0.0 to 1.0
-                
-                // Base linear curve
-                double linear = normalizedI;
-                
-                // Boost curve (sqrt creates a quick rise from 0, lifting shadows)
-                double boosted = Math.Sqrt(normalizedI);
-                
-                // Blend based on strength. 
-                // We taper off the boost as we get closer to 1.0 (highlights)
-                double taper = 1.0 - (normalizedI * normalizedI); // Stays near 1.0 longer, then drops
-                
-                // Calculate final normalized value and scale back to 0-65535
-                double finalNormalized = linear + (boosted - linear) * intensity * taper;
+                double n = i / 255.0;
+                double boosted = Math.Sqrt(n);
+                double taper   = 1.0 - (n * n);
 
-                // Apply flat gamma scalar mathematically (curve exponentiation: Output = Input ^ (1 / Gamma))
+                double final = n + (boosted - n) * intensity * taper;
+
                 if (Math.Abs(gammaScalar - 1.0f) > 0.001f)
-                {
-                    finalNormalized = Math.Pow(finalNormalized, 1.0 / gammaScalar);
-                }
-                
-                // Clamp to max
-                if (finalNormalized > 1.0) finalNormalized = 1.0;
-                
-                ushort value = (ushort)(finalNormalized * 65535.0);
+                    final = Math.Pow(final, 1.0 / gammaScalar);
 
-                ramp.Red[i] = value;
-                ramp.Green[i] = value;
-                ramp.Blue[i] = value;
+                if (final > 1.0) final = 1.0;
+                if (final < 0.0) final = 0.0;
+
+                ushort v = (ushort)(final * 65535.0);
+                ramp.Red[i]   = v;
+                ramp.Green[i] = v;
+                ramp.Blue[i]  = v;
             }
 
-            bool result = SetDeviceGammaRamp(hDC, ref ramp);
-            ReleaseDC(IntPtr.Zero, hDC);
-            return result;
+            _lastRamp    = ramp;
+            _hasLastRamp = true;
+
+            // NVAPI path: same driver-level access the NVIDIA App uses for gamma/brightness.
+            // GDI SetDeviceGammaRamp is silently ignored on systems where NVIDIA App is active.
+            if (vibrance.GUI.NVIDIA.NvidiaColorController.TryInit())
+            {
+                bool nvapiOk = vibrance.GUI.NVIDIA.NvidiaColorController.SetGammaAndBrightness(gammaScalar, shadowBoostStrength);
+                if (nvapiOk)
+                {
+                    VibranceGUI.Log($"NvidiaColorController.SetGammaAndBrightness OK: shadow={shadowBoostStrength} gamma={gammaScalar}");
+                    return true;
+                }
+                VibranceGUI.Log("NvidiaColorController.SetGammaAndBrightness FAILED — falling back to GDI/D3DKMT");
+            }
+
+            // Fallback: GDI / D3DKMT
+            bool ok = SetRamp(ref ramp);
+            if (!ok)
+                VibranceGUI.Log($"GammaRampController: all paths failed. shadow={shadowBoostStrength} gamma={gammaScalar}");
+            return ok;
         }
     }
 }

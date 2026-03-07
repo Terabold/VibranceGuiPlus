@@ -33,6 +33,8 @@ namespace vibrance.GUI.common
 
         private GammaRampController _gammaController;
         private bool _isGammaBoosted = false;
+        private ApplicationSetting _activeGameSetting = null;
+        private System.Windows.Forms.Timer _gammaRefreshTimer;
 
         public VibranceGUI(
             Func<List<ApplicationSetting>, Dictionary<string, Tuple<ResolutionModeWrapper, List<ResolutionModeWrapper>>>, IVibranceProxy> getProxy, 
@@ -79,6 +81,11 @@ namespace vibrance.GUI.common
             _gammaController = new GammaRampController();
             _gammaController.SaveOriginalRamp();
             WinEventHook.GetInstance().WinEventHookHandler += GammaRamp_WinEventHook;
+
+            // Timer created here but only started after NVAPI init succeeds (in backgroundWorker_DoWork)
+            _gammaRefreshTimer = new System.Windows.Forms.Timer();
+            _gammaRefreshTimer.Interval = 16; // ~60fps — reapply every frame to win driver reset race
+            _gammaRefreshTimer.Tick += GammaRefreshTimer_Tick;
 
             backgroundWorker.WorkerReportsProgress = true;
             settingsBackgroundWorker.WorkerReportsProgress = true;
@@ -154,6 +161,20 @@ namespace vibrance.GUI.common
                 _v.SetVibranceWindowsLevel(vibranceWindowsLevel);
                 _v.SetAffectPrimaryMonitorOnly(affectPrimaryMonitorOnly);
                 _v.SetNeverSwitchResolution(neverSwitchResolution);
+
+                // Run the NVAPI diagnostic probe so it logs the available color function IDs immediately
+                vibrance.GUI.NVIDIA.NvidiaColorController.TryInit();
+
+                // Start the gamma refresh timer only after successful init
+                this.Invoke((MethodInvoker)delegate
+                {
+                    _gammaRefreshTimer.Start();
+
+                    // If a listed game was already the foreground process when
+                    // VibranceGUI launched, the WinEventHook never fired for it.
+                    // Apply gamma immediately so the user doesn't have to alt-tab.
+                    ApplyGammaForCurrentForeground();
+                });
             }
         }
 
@@ -243,6 +264,12 @@ namespace vibrance.GUI.common
                 this.Refresh();
                 this.ShowInTaskbar = true;
             }
+            else if (e.Button == MouseButtons.Right)
+            {
+                // Show context menu manually at cursor position so it always
+                // appears near the tray icon regardless of form visibility state
+                contextMenuStrip.Show(Cursor.Position);
+            }
         }
 
         private void checkBoxPrimaryMonitorOnly_CheckedChanged(object sender, EventArgs e)
@@ -308,32 +335,57 @@ namespace vibrance.GUI.common
 
         private void GammaRamp_WinEventHook(object sender, WinEventHookEventArgs e)
         {
-            File.AppendAllText("debug_gamma.log", $"[{DateTime.Now}] Hook triggered for: {e.ProcessName}\n");
+            // Always update the label so the user can see what process is detected.
+            // This is the single most useful diagnostic for "gamma not working".
+            bool hasGammaSettings = false;
+
             if (_applicationSettings != null && _applicationSettings.Count > 0)
             {
                 ApplicationSetting applicationSetting = _applicationSettings.FirstOrDefault(x => string.Equals(x.Name, e.ProcessName, StringComparison.OrdinalIgnoreCase));
                 if (applicationSetting != null)
                 {
-                    File.AppendAllText("debug_gamma.log", $"  -> Found matching settings! Shadow: {applicationSetting.ShadowBoostLevel}, Gamma: {applicationSetting.GammaLevel}\n");
-                    // Apply gamma if gamma is NOT 1.0f or shadow > 0
-                    if (applicationSetting.ShadowBoostLevel > 0 || Math.Abs(applicationSetting.GammaLevel - 1.0f) > 0.001f)
+                    bool needsGamma = applicationSetting.ShadowBoostLevel > 0 || Math.Abs(applicationSetting.GammaLevel - 1.0f) > 0.001f;
+                    hasGammaSettings = needsGamma;
+
+                    if (needsGamma)
                     {
-                        File.AppendAllText("debug_gamma.log", $"  -> Applying Gamma/Shadow Boost!\n");
+                        _activeGameSetting = applicationSetting;
                         _gammaController.ApplyShadowBoostAndGamma(applicationSetting.ShadowBoostLevel, applicationSetting.GammaLevel);
                         _isGammaBoosted = true;
+
+                        UpdateGammaStatusLabel($"✓ Gamma ON: {applicationSetting.Name} (shadow={applicationSetting.ShadowBoostLevel}% γ={applicationSetting.GammaLevel:F2})");
+
+                        var setting = applicationSetting;
+                        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+                        {
+                            System.Threading.Thread.Sleep(120);
+                            if (_isGammaBoosted && this.IsHandleCreated)
+                                this.BeginInvoke((MethodInvoker)delegate
+                                {
+                                    if (_isGammaBoosted)
+                                        _gammaController.ApplyShadowBoostAndGamma(setting.ShadowBoostLevel, setting.GammaLevel);
+                                });
+                        });
                     }
-                    else if (_isGammaBoosted)
+                    else
                     {
-                        File.AppendAllText("debug_gamma.log", $"  -> Restoring original ramp (App Setting was default)\n");
-                        _gammaController.RestoreOriginalRamp();
-                        _isGammaBoosted = false;
+                        // Game is in list but gamma/shadow are at default — show a helpful hint
+                        UpdateGammaStatusLabel($"▷ {applicationSetting.Name} matched – shadow/gamma at default (no effect)");
+                        if (_isGammaBoosted)
+                        {
+                            _activeGameSetting = null;
+                            _gammaController.RestoreOriginalRamp();
+                            _isGammaBoosted = false;
+                        }
                     }
                 }
                 else
                 {
+                    // Process name not in the list
+                    UpdateGammaStatusLabel($"Focused: {e.ProcessName} – not in list");
                     if (_isGammaBoosted)
                     {
-                        File.AppendAllText("debug_gamma.log", $"  -> Restoring original ramp (Lost focus of app)\n");
+                        _activeGameSetting = null;
                         _gammaController.RestoreOriginalRamp();
                         _isGammaBoosted = false;
                     }
@@ -341,6 +393,94 @@ namespace vibrance.GUI.common
             }
         }
 
+        /// <summary>
+        /// Updates the gamma state label (green label above status bar) from any thread safely.
+        /// </summary>
+        private void UpdateGammaStatusLabel(string text)
+        {
+            if (this.IsHandleCreated)
+            {
+                if (this.InvokeRequired)
+                    this.BeginInvoke((MethodInvoker)delegate { labelGammaStatus.Text = text; });
+                else
+                    labelGammaStatus.Text = text;
+            }
+        }
+
+        private void UpdateFocusedProcessLabel(string processName)
+        {
+            if (this.IsHandleCreated)
+            {
+                if (this.InvokeRequired)
+                    this.BeginInvoke((MethodInvoker)delegate { observerStatusLabel.Text = "Focused: " + processName; });
+                else
+                    observerStatusLabel.Text = "Focused: " + processName;
+            }
+        }
+
+        private void GammaRefreshTimer_Tick(object sender, EventArgs e)
+        {
+            if (_isGammaBoosted)
+                _gammaController.Reapply();
+        }
+
+        /// <summary>
+        /// Hold-to-test: applies an extreme gamma boost immediately.
+        /// If the screen doesn't change, SetDeviceGammaRamp is completely
+        /// blocked on this system and we need a different approach.
+        /// </summary>
+        private void buttonTestGamma_MouseDown(object sender, System.Windows.Forms.MouseEventArgs e)
+        {
+            // Shadow=100 (max), Gamma=1.5 — proves BOTH work using the exact same path
+            bool ok = _gammaController.ApplyShadowBoostAndGamma(100, 1.5f);
+            labelGammaStatus.Text = ok
+                ? "TEST: Shadow Boost & Gamma applied! (ok)"
+                : "TEST: gamma call FAILED — API blocked on this system";
+            labelGammaStatus.ForeColor = ok
+                ? System.Drawing.Color.FromArgb(100, 220, 100)
+                : System.Drawing.Color.FromArgb(220, 80, 80);
+        }
+
+        private void buttonTestGamma_MouseUp(object sender, System.Windows.Forms.MouseEventArgs e)
+        {
+            _gammaController.RestoreOriginalRamp();
+            labelGammaStatus.Text = "Gamma: idle (released)";
+            labelGammaStatus.ForeColor = System.Drawing.Color.FromArgb(100, 200, 100);
+        }
+
+        /// <summary>
+        /// Checks the currently focused process and immediately applies gamma/shadow boost
+        /// if it matches a saved application setting. Called once on startup so that games
+        /// already running when VibranceGUI launches get the correct gamma without needing
+        /// the user to alt-tab away and back.
+        /// </summary>
+        private void ApplyGammaForCurrentForeground()
+        {
+            if (_applicationSettings == null || _applicationSettings.Count == 0)
+                return;
+            try
+            {
+                uint pid;
+                GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+                if (pid == 0) return;
+
+                using (var proc = System.Diagnostics.Process.GetProcessById((int)pid))
+                {
+                    string name = proc.ProcessName;
+                    ApplicationSetting setting = _applicationSettings.FirstOrDefault(
+                        x => string.Equals(x.Name, name, StringComparison.OrdinalIgnoreCase));
+                    if (setting != null &&
+                        (setting.ShadowBoostLevel > 0 || Math.Abs(setting.GammaLevel - 1.0f) > 0.001f))
+                    {
+                        _activeGameSetting = setting;
+                        _gammaController.ApplyShadowBoostAndGamma(setting.ShadowBoostLevel, setting.GammaLevel);
+                        _isGammaBoosted = true;
+                        UpdateGammaStatusLabel($"Gamma/Shadow active: {setting.Name}");
+                    }
+                }
+            }
+            catch { /* process may have exited or access denied — safe to ignore */ }
+        }
 
 
         private void SetGuiEnabledFlag(bool flag)
@@ -363,6 +503,11 @@ namespace vibrance.GUI.common
                 this.statusLabel.Text = "Closing...";
                 this.statusLabel.ForeColor = Color.Red;
                 this.Update();
+                if (_gammaRefreshTimer != null)
+                {
+                    _gammaRefreshTimer.Stop();
+                    _gammaRefreshTimer.Dispose();
+                }
                 if (_gammaController != null)
                 {
                     _gammaController.RestoreOriginalRamp();
@@ -562,12 +707,52 @@ namespace vibrance.GUI.common
                     }
                     _applicationSettings.Add(newSetting);
                     ForceSaveVibranceSettings();
+
+                    // Immediately apply gamma if the saved game is the currently focused process.
+                    // Without this, the user would need to alt-tab away and back for it to take effect.
+                    try
+                    {
+                        var focusedProcess = System.Diagnostics.Process.GetProcessById(
+                            (int)GetForegroundProcessId());
+                        if (focusedProcess != null &&
+                            string.Equals(focusedProcess.ProcessName, newSetting.Name, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (newSetting.ShadowBoostLevel > 0 || Math.Abs(newSetting.GammaLevel - 1.0f) > 0.001f)
+                            {
+                                _activeGameSetting = newSetting;
+                                _gammaController.ApplyShadowBoostAndGamma(newSetting.ShadowBoostLevel, newSetting.GammaLevel);
+                                _isGammaBoosted = true;
+                                UpdateGammaStatusLabel($"Gamma/Shadow active: {newSetting.Name}");
+                            }
+                            else
+                            {
+                                _activeGameSetting = null;
+                                _gammaController.RestoreOriginalRamp();
+                                _isGammaBoosted = false;
+                                UpdateGammaStatusLabel("");
+                            }
+                        }
+                    }
+                    catch { /* process may have exited — safe to ignore */ }
                 }
                 else if(actualSetting == null)
                 {
                     removeApplicationListItem(selectedItem);
                 }
             }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+        private uint GetForegroundProcessId()
+        {
+            uint pid;
+            GetWindowThreadProcessId(GetForegroundWindow(), out pid);
+            return pid;
         }
 
         private void buttonRemoveProgram_Click(object sender, EventArgs e)

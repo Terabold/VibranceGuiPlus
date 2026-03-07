@@ -1,5 +1,4 @@
 ﻿using System;
-using System.IO;
 using System.Diagnostics;
 using System.Media;
 using System.Runtime.InteropServices;
@@ -218,7 +217,6 @@ namespace vibrance.GUI.common
 
         static void WinEventProc(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
         {
-            File.AppendAllText("debug_winevent.log", $"[{DateTime.Now}] WinEventProc early entry. hwnd: {hwnd}\n");
             try
             {
                 uint processId;
@@ -237,13 +235,11 @@ namespace vibrance.GUI.common
                         ProcessName = p.ProcessName,
                         WindowText = sb.ToString()
                     };
-                    File.AppendAllText("debug_winevent.log", $"[{DateTime.Now}] Core hook captured: {p.ProcessName}\n");
                     GetInstance().DispatchWinEventHookEvent(e);
                 }
             }
             catch (Exception ex)
             {
-                File.AppendAllText("debug_winevent.log", $"[{DateTime.Now}] Hook exception: {ex.Message}\n");
             }
         }
 

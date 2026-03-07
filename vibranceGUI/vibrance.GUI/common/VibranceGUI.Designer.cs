@@ -51,6 +51,8 @@
             this.buttonRemoveProgram = new System.Windows.Forms.Button();
             this.listApplications = new System.Windows.Forms.ListView();
             this.buttonAddProgram = new System.Windows.Forms.Button();
+            this.buttonTestGamma = new System.Windows.Forms.Button();
+            this.labelGammaStatus = new System.Windows.Forms.Label();
             this.contextMenuStrip.SuspendLayout();
             this.groupBox1.SuspendLayout();
             this.groupBox3.SuspendLayout();
@@ -63,7 +65,7 @@
             this.notifyIcon.BalloonTipIcon = System.Windows.Forms.ToolTipIcon.Info;
             this.notifyIcon.BalloonTipText = "Running minimized... Like the program? Consider donating!";
             this.notifyIcon.BalloonTipTitle = "vibranceGUI";
-            this.notifyIcon.ContextMenuStrip = this.contextMenuStrip;
+            // Context menu is shown manually on right-click to ensure correct position near tray icon
             this.notifyIcon.Icon = ((System.Drawing.Icon)(resources.GetObject("notifyIcon.Icon")));
             this.notifyIcon.Text = "vibranceGUI";
             this.notifyIcon.Visible = true;
@@ -179,20 +181,45 @@
             // statusLabel
             // 
             this.statusLabel.AutoSize = true;
-            this.statusLabel.Location = new System.Drawing.Point(106, 420);
+            this.statusLabel.Location = new System.Drawing.Point(310, 432);
             this.statusLabel.Name = "statusLabel";
             this.statusLabel.Size = new System.Drawing.Size(61, 13);
             this.statusLabel.TabIndex = 14;
             this.statusLabel.Text = "Initializing...";
             // 
-            // observerStatusLabel
+            // observerStatusLabel — shows focused process and gamma state
             // 
-            this.observerStatusLabel.AutoSize = true;
-            this.observerStatusLabel.Location = new System.Drawing.Point(12, 420);
+            this.observerStatusLabel.AutoSize = false;
+            this.observerStatusLabel.Location = new System.Drawing.Point(12, 430);
+            this.observerStatusLabel.Size = new System.Drawing.Size(290, 16);
             this.observerStatusLabel.Name = "observerStatusLabel";
-            this.observerStatusLabel.Size = new System.Drawing.Size(87, 13);
             this.observerStatusLabel.TabIndex = 13;
-            this.observerStatusLabel.Text = "Observer status: ";
+            this.observerStatusLabel.Text = "Focused: (none)";
+            this.observerStatusLabel.ForeColor = System.Drawing.Color.FromArgb(180, 180, 180);
+            // 
+            // labelGammaStatus — shows gamma ON/OFF with values
+            //
+            this.labelGammaStatus.AutoSize = false;
+            this.labelGammaStatus.Location = new System.Drawing.Point(12, 412);
+            this.labelGammaStatus.Size = new System.Drawing.Size(395, 16);
+            this.labelGammaStatus.Name = "labelGammaStatus";
+            this.labelGammaStatus.TabIndex = 25;
+            this.labelGammaStatus.Text = "Gamma: idle";
+            this.labelGammaStatus.ForeColor = System.Drawing.Color.FromArgb(100, 200, 100);
+            // 
+            // buttonTestGamma
+            //
+            this.buttonTestGamma.Location = new System.Drawing.Point(270, 395);
+            this.buttonTestGamma.Name = "buttonTestGamma";
+            this.buttonTestGamma.Size = new System.Drawing.Size(137, 23);
+            this.buttonTestGamma.TabIndex = 26;
+            this.buttonTestGamma.Text = "Test Gamma (Hold)";
+            this.buttonTestGamma.UseVisualStyleBackColor = true;
+            this.buttonTestGamma.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
+            this.buttonTestGamma.FlatAppearance.BorderColor = System.Drawing.Color.FromArgb(100, 200, 100);
+            this.buttonTestGamma.ForeColor = System.Drawing.Color.FromArgb(100, 200, 100);
+            this.buttonTestGamma.MouseDown += new System.Windows.Forms.MouseEventHandler(this.buttonTestGamma_MouseDown);
+            this.buttonTestGamma.MouseUp += new System.Windows.Forms.MouseEventHandler(this.buttonTestGamma_MouseUp);
             // settingsBackgroundWorker
             // 
             this.settingsBackgroundWorker.DoWork += new System.ComponentModel.DoWorkEventHandler(this.settingsBackgroundWorker_DoWork);
@@ -270,11 +297,11 @@
             // labelGlobalInfo
             // 
             this.labelGlobalInfo.AutoSize = true;
-            this.labelGlobalInfo.Location = new System.Drawing.Point(13, 400);
+            this.labelGlobalInfo.Location = new System.Drawing.Point(13, 395);
             this.labelGlobalInfo.Name = "labelGlobalInfo";
-            this.labelGlobalInfo.Size = new System.Drawing.Size(350, 13);
+            this.labelGlobalInfo.Size = new System.Drawing.Size(250, 13);
             this.labelGlobalInfo.TabIndex = 20;
-            this.labelGlobalInfo.Text = "Note: Vibrance is applied to the entire monitor while app is in focus.";
+            this.labelGlobalInfo.Text = "Vibrance is applied to the entire monitor while in focus.";
             this.labelGlobalInfo.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(150)))), ((int)(((byte)(150)))), ((int)(((byte)(150)))));
             // VibranceGUI
             // 
@@ -282,11 +309,13 @@
             this.ForeColor = System.Drawing.Color.White;
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 13F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(419, 450);
+            this.ClientSize = new System.Drawing.Size(419, 455);
             this.Controls.Add(this.groupBox5);
             this.Controls.Add(this.groupBox1);
             this.Controls.Add(this.statusLabel);
             this.Controls.Add(this.observerStatusLabel);
+            this.Controls.Add(this.labelGammaStatus);
+            this.Controls.Add(this.buttonTestGamma);
             this.Controls.Add(this.labelGlobalInfo);
             this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedSingle;
             this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
@@ -323,6 +352,8 @@
         private System.Windows.Forms.TrackBar trackBarWindowsLevel;
         private System.Windows.Forms.Label statusLabel;
         private System.Windows.Forms.Label observerStatusLabel;
+        private System.Windows.Forms.Label labelGammaStatus;
+        private System.Windows.Forms.Button buttonTestGamma;
         private System.ComponentModel.BackgroundWorker settingsBackgroundWorker;
         private System.Windows.Forms.ToolTip toolTip;
         private System.Windows.Forms.CheckBox checkBoxPrimaryMonitorOnly;
