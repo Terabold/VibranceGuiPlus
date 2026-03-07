@@ -25,6 +25,12 @@ namespace vibrance.GUI.common
         [DllImport("user32.dll")]
         private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
 
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetWindowDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
         // ── D3DKMT (kernel-mode path — bypasses foreground/driver restrictions) ──
         // This is the same path NVIDIA Control Panel uses internally.
         [DllImport("gdi32.dll", SetLastError = false)]
@@ -113,33 +119,46 @@ namespace vibrance.GUI.common
             Array.Copy(ramp.Blue,  0, flat, 512, 256);
 
             GCHandle pin = GCHandle.Alloc(flat, GCHandleType.Pinned);
+            bool kmtOk = false;
             try
             {
-                bool kmtOk = SetRampViaD3DKMT(pin.AddrOfPinnedObject());
-                if (kmtOk) return true;
+                kmtOk = SetRampViaD3DKMT(pin.AddrOfPinnedObject());
             }
             finally
             {
                 pin.Free();
             }
 
-            // D3DKMT unavailable or failed — fall through to GDI paths.
-            bool gdiOk = false;
+            // DC Path 1: Monitor DC (target specific screen)
             string deviceName = Screen.PrimaryScreen.DeviceName;
-
             IntPtr hMonDC = CreateDC(null, deviceName, null, IntPtr.Zero);
+            bool gdiMonOk = false;
             if (hMonDC != IntPtr.Zero)
             {
-                gdiOk |= SetDeviceGammaRamp(hMonDC, ref ramp);
+                gdiMonOk = SetDeviceGammaRamp(hMonDC, ref ramp);
                 DeleteDC(hMonDC);
             }
 
+            // DC Path 2: Foreground Window DC (known bypass for exclusive fullscreen blocks)
+            IntPtr hForeground = GetForegroundWindow();
+            bool gdiWinOk = false;
+            if (hForeground != IntPtr.Zero)
+            {
+                IntPtr hWinDC = GetWindowDC(hForeground);
+                if (hWinDC != IntPtr.Zero)
+                {
+                    gdiWinOk = SetDeviceGammaRamp(hWinDC, ref ramp);
+                    ReleaseDC(hForeground, hWinDC);
+                }
+            }
+
+            // DC Path 3: Desktop DC (universal fallback)
             IntPtr hDesktopDC = GetDC(IntPtr.Zero);
-            gdiOk |= SetDeviceGammaRamp(hDesktopDC, ref ramp);
+            bool gdiDeskOk = SetDeviceGammaRamp(hDesktopDC, ref ramp);
             ReleaseDC(IntPtr.Zero, hDesktopDC);
 
-            bool result = gdiOk;
-            VibranceGUI.Log($"GammaRampController.SetRamp: D3DKMT=fail GDI={gdiOk}");
+            bool result = kmtOk || gdiMonOk || gdiWinOk || gdiDeskOk;
+            VibranceGUI.Log($"GammaRampController.SetRamp: D3DKMT={kmtOk} GDI(Monitor)={gdiMonOk} GDI(Window)={gdiWinOk} GDI(Desktop)={gdiDeskOk}");
             return result;
         }
 
@@ -150,48 +169,62 @@ namespace vibrance.GUI.common
         /// </summary>
         private bool SetRampViaD3DKMT(IntPtr pFlatRamp)
         {
-            // Get desktop DC to find the adapter
+            // Try Desktop DC first, then Monitor DC if it fails to find an adapter.
             IntPtr hDC = GetDC(IntPtr.Zero);
             if (hDC == IntPtr.Zero) return false;
 
+            if (TryD3DKMTWithDC(hDC, pFlatRamp))
+            {
+                ReleaseDC(IntPtr.Zero, hDC);
+                return true;
+            }
+            ReleaseDC(IntPtr.Zero, hDC);
+
+            string deviceName = Screen.PrimaryScreen.DeviceName;
+            hDC = CreateDC(null, deviceName, null, IntPtr.Zero);
+            if (hDC != IntPtr.Zero)
+            {
+                bool ok = TryD3DKMTWithDC(hDC, pFlatRamp);
+                DeleteDC(hDC);
+                return ok;
+            }
+
+            return false;
+        }
+
+        private bool TryD3DKMTWithDC(IntPtr hDC, IntPtr pFlatRamp)
+        {
+            var openData = new D3DKMT_OPENADAPTERFROMHDC { hDc = hDC };
+            if (D3DKMTOpenAdapterFromHdc(ref openData) != 0) return false;
+
+            uint hAdapter = openData.hAdapter;
             try
             {
-                var openData = new D3DKMT_OPENADAPTERFROMHDC { hDc = hDC };
-                if (D3DKMTOpenAdapterFromHdc(ref openData) != 0) return false;
+                var createData = new D3DKMT_CREATEDEVICE { hAdapter = hAdapter };
+                if (D3DKMTCreateDevice(ref createData) != 0) return false;
 
-                uint hAdapter = openData.hAdapter;
                 try
                 {
-                    var createData = new D3DKMT_CREATEDEVICE { hAdapter = hAdapter };
-                    if (D3DKMTCreateDevice(ref createData) != 0) return false;
-
-                    var destroyData = new D3DKMT_DESTROYDEVICE { hDevice = createData.hDevice };
-                    try
+                    var setData = new D3DKMT_SETGAMMARAMP
                     {
-                        var setData = new D3DKMT_SETGAMMARAMP
-                        {
-                            hDevice       = createData.hDevice,
-                            FirstEntry    = 0,
-                            NumberOfEntries = 256,
-                            Type          = 2,      // D3DDDI_GAMMARAMP_RGB256x3x16
-                            pGammaRamp    = pFlatRamp
-                        };
-                        return D3DKMTSetGammaRamp(ref setData) == 0;
-                    }
-                    finally
-                    {
-                        D3DKMTDestroyDevice(ref destroyData);
-                    }
+                        hDevice       = createData.hDevice,
+                        FirstEntry    = 0,
+                        NumberOfEntries = 256,
+                        Type          = 2,      // D3DDDI_GAMMARAMP_RGB256x3x16
+                        pGammaRamp    = pFlatRamp
+                    };
+                    return D3DKMTSetGammaRamp(ref setData) == 0;
                 }
                 finally
                 {
-                    var closeData = new D3DKMT_CLOSEADAPTER { hAdapter = hAdapter };
-                    D3DKMTCloseAdapter(ref closeData);
+                    var destroyData = new D3DKMT_DESTROYDEVICE { hDevice = createData.hDevice };
+                    D3DKMTDestroyDevice(ref destroyData);
                 }
             }
             finally
             {
-                ReleaseDC(IntPtr.Zero, hDC);
+                var closeData = new D3DKMT_CLOSEADAPTER { hAdapter = hAdapter };
+                D3DKMTCloseAdapter(ref closeData);
             }
         }
 
@@ -240,22 +273,35 @@ namespace vibrance.GUI.common
 
         public bool RestoreOriginalRamp()
         {
-            // NVAPI path — try first since GDI is silently ignored on NVIDIA App systems
+            _hasLastRamp = false;
+            MagnificationController.Restore();
+
+            // Priority 1: NVAPI Direct
             if (vibrance.GUI.NVIDIA.NvidiaColorController.IsAvailable)
-                return vibrance.GUI.NVIDIA.NvidiaColorController.RestoreOriginal();
+            {
+                vibrance.GUI.NVIDIA.NvidiaColorController.RestoreOriginal();
+                // We also try SetDirectRamp with linear values if we have them
+                if (_hasOriginalRamp)
+                    vibrance.GUI.NVIDIA.NvidiaColorController.SetDirectRamp(_originalRamp.Red, _originalRamp.Green, _originalRamp.Blue);
+            }
 
             if (!_hasOriginalRamp) return false;
-            _hasLastRamp = false;
             return SetRamp(ref _originalRamp);
         }
 
         /// <summary>Called by the 16ms refresh timer — re-applies the last ramp cheaply.</summary>
         public void Reapply()
         {
-            // If NVAPI is active the driver keeps it; no re-apply needed.
-            // If GDI path, re-apply every tick to fight driver resets.
-            if (!vibrance.GUI.NVIDIA.NvidiaColorController.IsAvailable && _hasLastRamp)
+            if (_hasLastRamp)
+            {
+                // We re-apply everything to ensure we win any driver races
                 SetRamp(ref _lastRamp);
+                
+                if (vibrance.GUI.NVIDIA.NvidiaColorController.IsAvailable)
+                    vibrance.GUI.NVIDIA.NvidiaColorController.SetDirectRamp(_lastRamp.Red, _lastRamp.Green, _lastRamp.Blue);
+                
+                // Magnification is persistent by default, but re-applying doesn't hurt if we're fighting blocks
+            }
         }
 
         public bool ApplyShadowBoostAndGamma(int shadowBoostStrength, float gammaScalar = 1.0f)
@@ -296,24 +342,46 @@ namespace vibrance.GUI.common
             _lastRamp    = ramp;
             _hasLastRamp = true;
 
-            // NVAPI path: same driver-level access the NVIDIA App uses for gamma/brightness.
-            // GDI SetDeviceGammaRamp is silently ignored on systems where NVIDIA App is active.
-            if (vibrance.GUI.NVIDIA.NvidiaColorController.TryInit())
+            // Priority 1: Native NVIDIA Color Control (Slider-based)
+            bool nvSimpleOk = false;
+            if (vibrance.GUI.NVIDIA.NvidiaColorController.IsAvailable || 
+                vibrance.GUI.NVIDIA.NvidiaColorController.TryInit())
             {
-                bool nvapiOk = vibrance.GUI.NVIDIA.NvidiaColorController.SetGammaAndBrightness(gammaScalar, shadowBoostStrength);
-                if (nvapiOk)
-                {
-                    VibranceGUI.Log($"NvidiaColorController.SetGammaAndBrightness OK: shadow={shadowBoostStrength} gamma={gammaScalar}");
-                    return true;
-                }
-                VibranceGUI.Log("NvidiaColorController.SetGammaAndBrightness FAILED — falling back to GDI/D3DKMT");
+                nvSimpleOk = vibrance.GUI.NVIDIA.NvidiaColorController.SetGammaAndBrightness(gammaScalar, shadowBoostStrength);
             }
 
-            // Fallback: GDI / D3DKMT
-            bool ok = SetRamp(ref ramp);
-            if (!ok)
-                VibranceGUI.Log($"GammaRampController: all paths failed. shadow={shadowBoostStrength} gamma={gammaScalar}");
-            return ok;
+            // Priority 2: GDI / KMT (The traditional method)
+            bool gdiOk = false;
+            if (!nvSimpleOk)
+            {
+                gdiOk = SetRamp(ref ramp);
+            }
+
+            // Priority 3: NVAPI Direct Ramp (Driver-level ramp)
+            bool nvRampOk = false;
+            if (!nvSimpleOk && !gdiOk && vibrance.GUI.NVIDIA.NvidiaColorController.IsAvailable)
+            {
+                nvRampOk = vibrance.GUI.NVIDIA.NvidiaColorController.SetDirectRamp(ramp.Red, ramp.Green, ramp.Blue);
+            }
+
+            // Priority 4: Magnification API (The "Contrast" Backup — only use if everything else fails)
+            bool magOk = false;
+            if (!nvSimpleOk && !gdiOk && !nvRampOk)
+            {
+                magOk = MagnificationController.Apply(gammaScalar, shadowBoostStrength);
+            }
+
+            VibranceGUI.Log($"ApplyGamma: NativeNV={nvSimpleOk} GDI={gdiOk} NVRamp={nvRampOk} MAG={magOk}");
+            return nvSimpleOk || gdiOk || nvRampOk || magOk;
+        }
+
+        private bool IsHDRActive()
+        {
+            try {
+                // Quick check for HDR via system management or similar could go here.
+                // For now, we'll just log that we are attempting the bypass.
+                return false; 
+            } catch { return false; }
         }
     }
 }

@@ -52,6 +52,7 @@ namespace vibrance.GUI.common
             _allowVisible = true;
 
             InitializeComponent();
+            this.Text += " v1.0.7 (Authentic FINAL)";
 
             trackBarWindowsLevel.Minimum = minTrackBarValue;
             trackBarWindowsLevel.Maximum = maxTrackBarValue;
@@ -335,6 +336,15 @@ namespace vibrance.GUI.common
 
         private void GammaRamp_WinEventHook(object sender, WinEventHookEventArgs e)
         {
+            // Ignore our own process so we don't restore gamma while the user is using the GUI
+            // or clicking "Test Gamma".
+            if (string.Equals(e.ProcessName, AppName, StringComparison.OrdinalIgnoreCase) || 
+                string.Equals(e.ProcessName, "vibrance.GUI", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(e.ProcessName, "vibranceGUI", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
             // Always update the label so the user can see what process is detected.
             // This is the single most useful diagnostic for "gamma not working".
             bool hasGammaSettings = false;
@@ -350,10 +360,13 @@ namespace vibrance.GUI.common
                     if (needsGamma)
                     {
                         _activeGameSetting = applicationSetting;
-                        _gammaController.ApplyShadowBoostAndGamma(applicationSetting.ShadowBoostLevel, applicationSetting.GammaLevel);
+                        bool ok = _gammaController.ApplyShadowBoostAndGamma(applicationSetting.ShadowBoostLevel, applicationSetting.GammaLevel);
                         _isGammaBoosted = true;
 
-                        UpdateGammaStatusLabel($"✓ Gamma ON: {applicationSetting.Name} (shadow={applicationSetting.ShadowBoostLevel}% γ={applicationSetting.GammaLevel:F2})");
+                        if (ok)
+                            UpdateGammaStatusLabel($"✓ Gamma ON: {applicationSetting.Name} (shadow={applicationSetting.ShadowBoostLevel}% γ={applicationSetting.GammaLevel:F2})");
+                        else
+                            UpdateGammaStatusLabel($"⚠ Gamma FAILED: {applicationSetting.Name} (Driver blocked the API)");
 
                         var setting = applicationSetting;
                         System.Threading.ThreadPool.QueueUserWorkItem(_ =>
@@ -431,11 +444,13 @@ namespace vibrance.GUI.common
         /// </summary>
         private void buttonTestGamma_MouseDown(object sender, System.Windows.Forms.MouseEventArgs e)
         {
-            // Shadow=100 (max), Gamma=1.5 — proves BOTH work using the exact same path
-            bool ok = _gammaController.ApplyShadowBoostAndGamma(100, 1.5f);
+            // Shadow=0, Gamma=2.0 — very obvious brightening if it works at all
+            _isGammaBoosted = true; // Set this so the 16ms refresh timer maintains it while held
+            bool ok = _gammaController.ApplyShadowBoostAndGamma(20, 1.5f);
+            
             labelGammaStatus.Text = ok
-                ? "TEST: Shadow Boost & Gamma applied! (ok)"
-                : "TEST: gamma call FAILED — API blocked on this system";
+                ? "TEST: Active (Native NVIDIA)"
+                : "TEST: FAILED (API Blocked)";
             labelGammaStatus.ForeColor = ok
                 ? System.Drawing.Color.FromArgb(100, 220, 100)
                 : System.Drawing.Color.FromArgb(220, 80, 80);
@@ -443,6 +458,7 @@ namespace vibrance.GUI.common
 
         private void buttonTestGamma_MouseUp(object sender, System.Windows.Forms.MouseEventArgs e)
         {
+            _isGammaBoosted = false;
             _gammaController.RestoreOriginalRamp();
             labelGammaStatus.Text = "Gamma: idle (released)";
             labelGammaStatus.ForeColor = System.Drawing.Color.FromArgb(100, 200, 100);
@@ -512,6 +528,7 @@ namespace vibrance.GUI.common
                 {
                     _gammaController.RestoreOriginalRamp();
                 }
+                MagnificationController.Shutdown();
                 if (_v != null && _v.GetVibranceInfo().isInitialized)
                 {
                     _v.HandleDvcExit();

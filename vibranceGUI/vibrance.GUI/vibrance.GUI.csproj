@@ -7,6 +7,7 @@
     <Platforms>x86</Platforms>
     <PlatformTarget>x86</PlatformTarget>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>..\bin\$(Configuration)\</OutputPath>
     <AssemblyName>vibrance.GUI</AssemblyName>
     <RootNamespace>vibrance.GUI</RootNamespace>
     <ApplicationIcon>setting.ico</ApplicationIcon>
