@@ -385,3 +385,4 @@ namespace vibrance.GUI.common
         }
     }
 }
+

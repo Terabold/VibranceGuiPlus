@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -52,6 +52,9 @@ namespace vibrance.GUI.common
             _allowVisible = true;
 
             InitializeComponent();
+            contextMenuStrip.Renderer = new ToolStripProfessionalRenderer(new ModernMenuColors());
+            foreach (ToolStripItem item in contextMenuStrip.Items)
+                item.ForeColor = Color.White;
             this.Text += " v1.0.7 (Authentic FINAL)";
 
             trackBarWindowsLevel.Minimum = minTrackBarValue;
@@ -85,7 +88,7 @@ namespace vibrance.GUI.common
 
             // Timer created here but only started after NVAPI init succeeds (in backgroundWorker_DoWork)
             _gammaRefreshTimer = new System.Windows.Forms.Timer();
-            _gammaRefreshTimer.Interval = 16; // ~60fps — reapply every frame to win driver reset race
+            _gammaRefreshTimer.Interval = 16; // ~60fps � reapply every frame to win driver reset race
             _gammaRefreshTimer.Tick += GammaRefreshTimer_Tick;
 
             backgroundWorker.WorkerReportsProgress = true;
@@ -364,9 +367,9 @@ namespace vibrance.GUI.common
                         _isGammaBoosted = true;
 
                         if (ok)
-                            UpdateGammaStatusLabel($"✓ Gamma ON: {applicationSetting.Name} (shadow={applicationSetting.ShadowBoostLevel}% γ={applicationSetting.GammaLevel:F2})");
+                            UpdateGammaStatusLabel($"? Gamma ON: {applicationSetting.Name} (shadow={applicationSetting.ShadowBoostLevel}% ?={applicationSetting.GammaLevel:F2})");
                         else
-                            UpdateGammaStatusLabel($"⚠ Gamma FAILED: {applicationSetting.Name} (Driver blocked the API)");
+                            UpdateGammaStatusLabel($"? Gamma FAILED: {applicationSetting.Name} (Driver blocked the API)");
 
                         var setting = applicationSetting;
                         System.Threading.ThreadPool.QueueUserWorkItem(_ =>
@@ -382,8 +385,8 @@ namespace vibrance.GUI.common
                     }
                     else
                     {
-                        // Game is in list but gamma/shadow are at default — show a helpful hint
-                        UpdateGammaStatusLabel($"▷ {applicationSetting.Name} matched – shadow/gamma at default (no effect)");
+                        // Game is in list but gamma/shadow are at default � show a helpful hint
+                        UpdateGammaStatusLabel($"? {applicationSetting.Name} matched � shadow/gamma at default (no effect)");
                         if (_isGammaBoosted)
                         {
                             _activeGameSetting = null;
@@ -395,7 +398,7 @@ namespace vibrance.GUI.common
                 else
                 {
                     // Process name not in the list
-                    UpdateGammaStatusLabel($"Focused: {e.ProcessName} – not in list");
+                    UpdateGammaStatusLabel($"Focused: {e.ProcessName} � not in list");
                     if (_isGammaBoosted)
                     {
                         _activeGameSetting = null;
@@ -442,18 +445,17 @@ namespace vibrance.GUI.common
         /// If the screen doesn't change, SetDeviceGammaRamp is completely
         /// blocked on this system and we need a different approach.
         /// </summary>
-        private void buttonTestGamma_MouseDown(object sender, System.Windows.Forms.MouseEventArgs e)
+        private void buttonTestGamma_MouseDown(object sender, MouseEventArgs e)
         {
-            // Shadow=0, Gamma=2.0 — very obvious brightening if it works at all
-            _isGammaBoosted = true; // Set this so the 16ms refresh timer maintains it while held
-            bool ok = _gammaController.ApplyShadowBoostAndGamma(20, 1.5f);
-            
-            labelGammaStatus.Text = ok
-                ? "TEST: Active (Native NVIDIA)"
-                : "TEST: FAILED (API Blocked)";
-            labelGammaStatus.ForeColor = ok
-                ? System.Drawing.Color.FromArgb(100, 220, 100)
-                : System.Drawing.Color.FromArgb(220, 80, 80);
+            _isGammaBoosted = true;
+            _gammaController.ApplyShadowBoostAndGamma(20, 1.5f);
+            System.Threading.ThreadPool.QueueUserWorkItem(_ => {
+                System.Threading.Thread.Sleep(20);
+                this.BeginInvoke((MethodInvoker)(() => {
+                    bool ok = _gammaController.ApplyShadowBoostAndGamma(20, 1.5f);
+                    labelGammaStatus.Text = ok ? "TEST: Active" : "TEST: FAILED";
+                }));
+            });
         }
 
         private void buttonTestGamma_MouseUp(object sender, System.Windows.Forms.MouseEventArgs e)
@@ -495,7 +497,7 @@ namespace vibrance.GUI.common
                     }
                 }
             }
-            catch { /* process may have exited or access denied — safe to ignore */ }
+            catch { /* process may have exited or access denied � safe to ignore */ }
         }
 
 
@@ -750,7 +752,7 @@ namespace vibrance.GUI.common
                             }
                         }
                     }
-                    catch { /* process may have exited — safe to ignore */ }
+                    catch { /* process may have exited � safe to ignore */ }
                 }
                 else if(actualSetting == null)
                 {
@@ -799,5 +801,15 @@ namespace vibrance.GUI.common
             ProcessExplorer ex = new ProcessExplorer(this);
             ex.Show();
         }
+        class ModernMenuColors : ProfessionalColorTable
+    {
+        public override Color MenuItemSelected => Color.FromArgb(60, 60, 60);
+        public override Color MenuItemBorder => Color.FromArgb(80, 80, 80);
+        public override Color MenuBorder => Color.FromArgb(80, 80, 80);
+        public override Color ToolStripDropDownBackground => Color.FromArgb(30, 30, 30);
+        public override Color ImageMarginGradientBegin => Color.FromArgb(30, 30, 30);
+        public override Color ImageMarginGradientMiddle => Color.FromArgb(30, 30, 30);
+        public override Color ImageMarginGradientEnd => Color.FromArgb(30, 30, 30);
     }
+}
 }
